@@ -1,0 +1,1 @@
+# Debug APK — no minify.

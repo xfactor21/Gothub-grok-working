@@ -1,0 +1,14 @@
+{
+  "name": "xide-compile-host",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "xIDE compile host — runs JDK, Gradle, and the Android SDK on a computer you own",
+  "scripts": {
+    "start": "node server.mjs",
+    "setup": "node setup.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
