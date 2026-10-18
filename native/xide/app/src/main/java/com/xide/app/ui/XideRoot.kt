@@ -101,10 +101,11 @@ fun XideRoot(vm: XideViewModel) {
                 Column(Modifier.weight(1f)) {
                     Text("xIDE", color = Fg, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Text(
-                        "${project?.name ?: if (currentId == null) "No project" else "Project"} · v9",
+                        "${project?.name ?: if (currentId == null) "No project" else "Project"} · v9.01",
                         color = Subtle,
                         fontSize = 11.sp,
                         maxLines = 1,
+                        modifier = Modifier.clickable { vm.go(Screen.Settings) },
                     )
                 }
                 Text(
@@ -128,10 +129,10 @@ fun XideRoot(vm: XideViewModel) {
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         NavItem("Home", screen == Screen.Home) { vm.go(Screen.Home) }
-                        NavItem("Projects", screen == Screen.Projects) { vm.go(Screen.Projects) }
-                        NavItem("Editor", screen == Screen.Editor) { vm.go(Screen.Editor) }
+                        NavItem("Edit", screen == Screen.Editor) { vm.go(Screen.Editor) }
+                        NavItem("Design", screen == Screen.Design) { vm.go(Screen.Design) }
+                        NavItem("Term", screen == Screen.Terminal) { vm.go(Screen.Terminal) }
                         NavItem("Build", screen == Screen.Build) { vm.go(Screen.Build) }
-                        NavItem("Settings", screen == Screen.Settings) { vm.go(Screen.Settings) }
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxSize()) {
@@ -139,6 +140,8 @@ fun XideRoot(vm: XideViewModel) {
                         Screen.Home -> HomeScreen(vm)
                         Screen.Projects -> ProjectsScreen(vm)
                         Screen.Editor -> EditorScreen(vm)
+                        Screen.Design -> DesignScreen(vm)
+                        Screen.Terminal -> TerminalScreen(vm)
                         Screen.Build -> BuildScreen(vm)
                         Screen.Settings -> SettingsScreen(vm)
                     }
@@ -155,10 +158,10 @@ fun XideRoot(vm: XideViewModel) {
                         .height(56.dp),
                 ) {
                     MobileTab("Home", screen == Screen.Home, Modifier.weight(1f)) { vm.go(Screen.Home) }
-                    MobileTab("Projects", screen == Screen.Projects, Modifier.weight(1f)) { vm.go(Screen.Projects) }
-                    MobileTab("Editor", screen == Screen.Editor, Modifier.weight(1f)) { vm.go(Screen.Editor) }
+                    MobileTab("Edit", screen == Screen.Editor, Modifier.weight(1f)) { vm.go(Screen.Editor) }
+                    MobileTab("Design", screen == Screen.Design, Modifier.weight(1f)) { vm.go(Screen.Design) }
+                    MobileTab("Term", screen == Screen.Terminal, Modifier.weight(1f)) { vm.go(Screen.Terminal) }
                     MobileTab("Build", screen == Screen.Build, Modifier.weight(1f)) { vm.go(Screen.Build) }
-                    MobileTab("SDK", screen == Screen.Settings, Modifier.weight(1f)) { vm.go(Screen.Settings) }
                 }
             }
         }
@@ -209,7 +212,7 @@ private fun HomeScreen(vm: XideViewModel) {
     ) {
         Text("NATIVE · THIS PHONE", style = MaterialTheme.typography.labelSmall)
         Text(
-            if (projects.isEmpty()) "Start a workspace." else "Welcome back.",
+            if (projects.isEmpty()) "Start here." else "On this phone.",
             style = MaterialTheme.typography.headlineLarge,
         )
         Text(

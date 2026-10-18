@@ -1,6 +1,6 @@
 package com.xide.app.data
 
-enum class Screen { Home, Projects, Editor, Build, Settings }
+enum class Screen { Home, Projects, Editor, Design, Terminal, Build, Settings }
 
 enum class TemplateId(val label: String, val hint: String) {
     AndroidCompose("Android App", "Kotlin + Compose. Assemble on this phone after Download SDK."),

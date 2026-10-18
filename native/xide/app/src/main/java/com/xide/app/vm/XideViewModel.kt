@@ -7,7 +7,10 @@ import android.provider.Settings
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import com.xide.app.XideApp
+import com.xide.app.compile.Shell
 import com.xide.app.compile.XideService
+import com.xide.app.design.DesignWriter
+import com.xide.app.design.UiBlock
 import com.xide.app.data.JobState
 import com.xide.app.data.Project
 import com.xide.app.data.Screen
@@ -18,6 +21,7 @@ import com.xide.app.toolchain.Toolchain
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
+import kotlin.concurrent.thread
 
 class XideViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = (app as XideApp).projects
@@ -162,4 +166,32 @@ class XideViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun current(): Project? = _currentId.value?.let { repo.get(it) }
+
+    fun runShell(line: String) {
+        val cmd = line.trim()
+        if (cmd.isEmpty()) return
+        _screen.value = Screen.Terminal
+        thread(name = "xide-shell") {
+            try {
+                Shell.run(getApplication(), _currentId.value, cmd)
+            } catch (t: Throwable) {
+                LogBus.add(t.message ?: "shell failed")
+            }
+        }
+    }
+
+    fun loadDesign(): List<UiBlock> {
+        val id = _currentId.value ?: return emptyList()
+        return DesignWriter.load(repo, id)
+    }
+
+    fun writeDesign(blocks: List<UiBlock>) {
+        val id = _currentId.value ?: return
+        DesignWriter.write(repo, id, blocks)
+        _files.value = repo.listFiles(id)
+        val gen = _files.value.firstOrNull { it.endsWith("GeneratedUi.kt") }
+        if (gen != null) openFile(gen)
+        _status.value = "Wrote GeneratedUi.kt"
+        _screen.value = Screen.Editor
+    }
 }

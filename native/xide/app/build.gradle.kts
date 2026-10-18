@@ -11,8 +11,11 @@ android {
         applicationId = "com.xide.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "9.0.0"
+        versionCode = 10
+        versionName = "9.01"
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
     buildTypes {
         release {
@@ -31,6 +34,7 @@ android {
     }
     buildFeatures { compose = true }
     packaging {
+        jniLibs { useLegacyPackaging = true }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }

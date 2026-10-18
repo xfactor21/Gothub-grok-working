@@ -24,54 +24,65 @@ object Assemble {
             LogBus.job("failed", "Assemble blocked", "java missing at ${javaBin.path}")
             return
         }
-        javaBin.setExecutable(true, false)
+        HostExec.prepareBins(ctx)
         val sdk = File(tc.sdkHome!!)
         File(dir, "local.properties").writeText("sdk.dir=${sdk.absolutePath.replace("\\", "\\\\")}\n")
 
         val launcher = File(tc.gradleLauncher!!)
-        LogBus.job("running", "Assemble ${project.name}", "Gradle assembleDebug — first run needs Wi-Fi")
+        val env = mutableMapOf<String, String>()
+        HostExec.fillEnv(ctx, env, javaHome, sdk)
+        val mark = File(ctx.cacheDir, "shim-mark.txt")
+        mark.delete()
 
-        val gradleUser = Toolchain.gradleUser(ctx).also { it.mkdirs() }
-        val tmp = File(ctx.cacheDir, "compile").also { it.mkdirs() }
-        val libDir = File(javaHome, "lib")
-        val serverDir = File(javaHome, "lib/server")
-        val jli = File(javaHome, "lib/jli")
-        val ld = listOf(serverDir, jli, libDir)
-            .filter { it.exists() }
-            .joinToString(":")
+        LogBus.job("running", "Assemble ${project.name}", "Checking java via linker64 — Android blocks direct exec")
+        try {
+            val ver = HostExec.runCaptured(javaBin, listOf("-version"), env, dir, mark)
+            ver.lineSequence().map { it.trim() }.firstOrNull { it.isNotBlank() }?.let { LogBus.add(it.take(400)) }
+            if (mark.exists()) LogBus.add("exec shim loaded — child tools can start")
+            else LogBus.add("exec shim did not load — aapt2 may still be blocked")
+        } catch (t: Throwable) {
+            LogBus.job(
+                "failed",
+                "Assemble failed",
+                "Cannot start java (${t.message ?: "error"}). Files are installed; Android refused to run them.",
+            )
+            return
+        }
 
-        val cmd = listOf(
-            javaBin.absolutePath,
-            "-Xmx768m",
-            "-Dfile.encoding=UTF-8",
-            "-Djava.io.tmpdir=${tmp.absolutePath}",
-            "-Dorg.gradle.appname=gradle",
-            "-Dkotlin.compiler.execution.strategy=in-process",
-            "-classpath",
-            launcher.absolutePath,
-            "org.gradle.launcher.GradleMain",
-            "--no-daemon",
-            "--warning-mode", "none",
-            ":app:assembleDebug",
+        val aapt = Toolchain.findAapt2(sdk)
+        if (aapt != null) {
+            try {
+                HostExec.runCaptured(aapt, listOf("version"), env, dir, null)
+                    .lineSequence().map { it.trim() }.firstOrNull { it.isNotBlank() }
+                    ?.let { LogBus.add("aapt2 $it".take(400)) }
+            } catch (t: Throwable) {
+                LogBus.add("aapt2 check failed: ${t.message?.take(300)}")
+            }
+        }
+
+        LogBus.add("Gradle assembleDebug — first run needs Wi-Fi")
+        val cmd = HostExec.command(
+            javaBin,
+            listOf(
+                "-Xmx768m",
+                "-Dfile.encoding=UTF-8",
+                "-Djava.io.tmpdir=${env["TMPDIR"]}",
+                "-Dorg.gradle.appname=gradle",
+                "-Dkotlin.compiler.execution.strategy=in-process",
+                "-classpath",
+                launcher.absolutePath,
+                "org.gradle.launcher.GradleMain",
+                "--no-daemon",
+                "--warning-mode", "none",
+                ":app:assembleDebug",
+            ),
         )
 
         val pb = ProcessBuilder(cmd)
             .directory(dir)
             .redirectErrorStream(true)
-        val env = pb.environment()
-        env["JAVA_HOME"] = javaHome.absolutePath
-        env["ANDROID_HOME"] = sdk.absolutePath
-        env["ANDROID_SDK_ROOT"] = sdk.absolutePath
-        env["GRADLE_USER_HOME"] = gradleUser.absolutePath
-        env["HOME"] = ctx.filesDir.absolutePath
-        env["TMPDIR"] = tmp.absolutePath
-        env["LANG"] = "C.UTF-8"
-        env["LD_LIBRARY_PATH"] = if (ld.isBlank()) env["LD_LIBRARY_PATH"] ?: "" else {
-            val prev = env["LD_LIBRARY_PATH"]
-            if (prev.isNullOrBlank()) ld else "$ld:$prev"
-        }
-        val path = env["PATH"] ?: "/system/bin:/system/xbin"
-        env["PATH"] = "${javaBin.parent}:${File(sdk, "build-tools/34.0.4").absolutePath}:$path"
+        val penv = pb.environment()
+        env.forEach { (k, v) -> penv[k] = v }
 
         val proc = pb.start()
         val gobble = Thread { drain(proc.inputStream) }
