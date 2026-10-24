@@ -26,8 +26,17 @@ object HostExec {
         }
     }
 
-    fun command(binary: File, args: List<String>): List<String> {
+    fun runner(ctx: Context): File? {
+        val dir = ctx.applicationInfo.nativeLibraryDir ?: return null
+        val file = File(dir, "libxide-run.so")
+        return if (file.exists()) file else null
+    }
+
+    fun command(binary: File, args: List<String>, runner: File?): List<String> {
         binary.setExecutable(true, false)
+        if (runner != null && runner.canExecute()) {
+            return listOf(runner.absolutePath, binary.absolutePath) + args
+        }
         val cls = elfClass(binary)
         if (cls == 0) return listOf("/system/bin/sh", binary.absolutePath) + args
         val linker = if (cls == 64) "/system/bin/linker64" else "/system/bin/linker"
@@ -70,8 +79,8 @@ object HostExec {
     }
 
     /** Run a private ELF (java, aapt2) and return combined output. Throws on non-zero. */
-    fun runCaptured(binary: File, args: List<String>, env: Map<String, String>, dir: File, mark: File?): String {
-        val cmd = command(binary, args)
+    fun runCaptured(binary: File, args: List<String>, env: Map<String, String>, dir: File, mark: File?, runner: File?): String {
+        val cmd = command(binary, args, runner)
         val pb = ProcessBuilder(cmd).directory(dir).redirectErrorStream(true)
         val e = pb.environment()
         env.forEach { (k, v) -> e[k] = v }

@@ -34,9 +34,10 @@ object Assemble {
         val mark = File(ctx.cacheDir, "shim-mark.txt")
         mark.delete()
 
-        LogBus.job("running", "Assemble ${project.name}", "Checking java via linker64 — Android blocks direct exec")
+        LogBus.job("running", "Assemble ${project.name}", "Checking java — memfd exec, linker64 rejects flags")
+        val run = HostExec.runner(ctx)
         try {
-            val ver = HostExec.runCaptured(javaBin, listOf("-version"), env, dir, mark)
+            val ver = HostExec.runCaptured(javaBin, listOf("-version"), env, dir, mark, run)
             ver.lineSequence().map { it.trim() }.firstOrNull { it.isNotBlank() }?.let { LogBus.add(it.take(400)) }
             if (mark.exists()) LogBus.add("exec shim loaded — child tools can start")
             else LogBus.add("exec shim did not load — aapt2 may still be blocked")
@@ -52,7 +53,7 @@ object Assemble {
         val aapt = Toolchain.findAapt2(sdk)
         if (aapt != null) {
             try {
-                HostExec.runCaptured(aapt, listOf("version"), env, dir, null)
+                HostExec.runCaptured(aapt, listOf("version"), env, dir, null, run)
                     .lineSequence().map { it.trim() }.firstOrNull { it.isNotBlank() }
                     ?.let { LogBus.add("aapt2 $it".take(400)) }
             } catch (t: Throwable) {
@@ -76,6 +77,7 @@ object Assemble {
                 "--warning-mode", "none",
                 ":app:assembleDebug",
             ),
+            run,
         )
 
         val pb = ProcessBuilder(cmd)
