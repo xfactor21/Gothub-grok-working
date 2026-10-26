@@ -90,7 +90,8 @@ object HostExec {
         val text = proc.inputStream.bufferedReader().use { it.readText() }
         val code = proc.waitFor()
         if (code != 0) {
-            error(text.lineSequence().map { it.trim() }.lastOrNull { it.isNotBlank() } ?: "exit $code")
+            val tail = text.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList().takeLast(6)
+            error(if (tail.isEmpty()) "exit $code" else tail.joinToString(" | "))
         }
         return text
     }

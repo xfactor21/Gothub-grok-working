@@ -11,8 +11,8 @@ android {
         applicationId = "com.xide.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "9.02"
+        versionCode = 12
+        versionName = "9.03"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }

@@ -23,8 +23,11 @@ extern char** environ;
 #ifndef __NR_execveat
 #define __NR_execveat 281
 #endif
-#ifndef AT_EMPTY_PATH
-#define AT_EMPTY_PATH 0x1000
+#ifndef MFD_EXEC
+#define MFD_EXEC 0x0010
+#endif
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001
 #endif
 
 static int elf_class(const char* path) {
@@ -63,7 +66,10 @@ static int copy_memfd(const char* path) {
     char buf[65536];
     ssize_t n;
     if (in < 0) return -1;
-    out = (int)syscall(__NR_memfd_create, "xide", 0);
+    /* Android 14+ defaults memfd to noexec. MFD_EXEC is required or execve returns EACCES. */
+    out = (int)syscall(__NR_memfd_create, "xide", MFD_CLOEXEC | MFD_EXEC);
+    if (out < 0 && errno == EINVAL) out = (int)syscall(__NR_memfd_create, "xide", MFD_CLOEXEC);
+    if (out < 0 && errno == EINVAL) out = (int)syscall(__NR_memfd_create, "xide", 0);
     if (out < 0) {
         close(in);
         return -1;
@@ -158,6 +164,14 @@ static int exec_script(const char* path, char* const argv[], char* const envp[])
     return rc;
 }
 
+static int args_are_paths(char* const argv[]) {
+    int i;
+    for (i = 1; argv && argv[i]; i++) {
+        if (argv[i][0] != '/') return 0;
+    }
+    return 1;
+}
+
 static int exec_private(const char* path, char* const argv[], char* const envp[]) {
     int cls = elf_class(path);
     int mem_err;
@@ -166,6 +180,13 @@ static int exec_private(const char* path, char* const argv[], char* const envp[]
     if (cls == 0) return exec_script(path, argv, envp);
     exec_memfd(path, argv, envp);
     mem_err = errno;
+    fprintf(stderr, "xide: memfd exec failed errno %d (%s)\n", mem_err, strerror(mem_err));
+    /* This phone's linker64 rejects any argument that is not an absolute path,
+       so `linker64 java -version` can never work. Only retry that for path-only argv. */
+    if (!args_are_paths(argv)) {
+        errno = mem_err;
+        return -1;
+    }
     linker = linker_for(cls);
     na = dup_argv_shift(argv, linker, path);
     if (!na) {
@@ -173,7 +194,7 @@ static int exec_private(const char* path, char* const argv[], char* const envp[]
         return -1;
     }
     execve(linker, na, envp);
-    fprintf(stderr, "xide: memfd errno %d, linker errno %d\n", mem_err, errno);
+    fprintf(stderr, "xide: linker errno %d (%s)\n", errno, strerror(errno));
     free(na);
     errno = mem_err;
     return -1;
