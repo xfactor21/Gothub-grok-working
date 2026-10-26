@@ -200,10 +200,117 @@ static int exec_private(const char* path, char* const argv[], char* const envp[]
     return -1;
 }
 
+static int is_java_bin(const char* path) {
+    const char* base = path ? strrchr(path, '/') : NULL;
+    base = base ? base + 1 : path;
+    return base && strcmp(base, "java") == 0;
+}
+
+static int is_self_exe(const char* path) {
+    if (!path) return 0;
+    if (strcmp(path, "/proc/self/exe") == 0) return 1;
+    if (strcmp(path, "/proc/thread-self/exe") == 0) return 1;
+    return 0;
+}
+
+static ssize_t (*real_readlink)(const char*, char*, size_t);
+static ssize_t (*real_readlinkat)(int, const char*, char*, size_t);
+
+static ssize_t fake_self_exe(char* buf, size_t bufsiz) {
+    const char* exe = getenv("XIDE_EXE");
+    size_t n;
+    if (!exe || exe[0] != '/') return -1;
+    n = strlen(exe);
+    if (n > bufsiz) n = bufsiz;
+    memcpy(buf, exe, n);
+    return (ssize_t)n;
+}
+
+ssize_t readlink(const char* path, char* buf, size_t bufsiz) {
+    ssize_t n;
+    if (!real_readlink) real_readlink = dlsym(RTLD_NEXT, "readlink");
+    if (is_self_exe(path)) {
+        n = fake_self_exe(buf, bufsiz);
+        if (n >= 0) return n;
+    }
+    return real_readlink(path, buf, bufsiz);
+}
+
+ssize_t readlinkat(int dirfd, const char* path, char* buf, size_t bufsiz) {
+    ssize_t n;
+    if (!real_readlinkat) real_readlinkat = dlsym(RTLD_NEXT, "readlinkat");
+    if ((dirfd == AT_FDCWD || dirfd < 0) && is_self_exe(path)) {
+        n = fake_self_exe(buf, bufsiz);
+        if (n >= 0) return n;
+    }
+    return real_readlinkat(dirfd, path, buf, bufsiz);
+}
+
+static char** env_set(char* const envp[], const char* key, const char* val) {
+    int n = 0;
+    int i;
+    int replaced = 0;
+    size_t klen = strlen(key);
+    char* kv = NULL;
+    char** out;
+    if (asprintf(&kv, "%s=%s", key, val) < 0) return NULL;
+    while (envp && envp[n]) n++;
+    out = (char**)calloc((size_t)n + 2, sizeof(char*));
+    if (!out) {
+        free(kv);
+        return NULL;
+    }
+    for (i = 0; i < n; i++) {
+        if (!replaced && strncmp(envp[i], key, klen) == 0 && envp[i][klen] == '=') {
+            out[i] = kv;
+            replaced = 1;
+        } else {
+            out[i] = envp[i];
+        }
+    }
+    if (!replaced) out[n++] = kv;
+    out[n] = NULL;
+    return out;
+}
+
 static int (*real_execve)(const char*, char* const[], char* const[]);
 
-int execve(const char* path, char* const argv[], char* const envp[]) {
+/* The JDK java launcher is shipped in nativeLibraryDir, which Android allows
+   the app to execute. argv[0] stays the real java path so the launcher can
+   find JAVA_HOME, and readlink(/proc/self/exe) is rewritten to that path. */
+static int launch_shipped(const char* shipped, const char* exe, char* const argv[], char* const envp[]) {
+    int argc = 0;
+    int i;
+    char** av;
+    char** ev;
+    while (argv && argv[argc]) argc++;
+    if (argc < 1) return -1;
+    av = (char**)calloc((size_t)argc + 1, sizeof(char*));
+    if (!av) return -1;
+    av[0] = (char*)exe;
+    for (i = 1; i < argc; i++) av[i] = argv[i];
+    ev = env_set(envp ? envp : environ, "XIDE_EXE", exe);
+    if (!ev) {
+        free(av);
+        return -1;
+    }
     if (!real_execve) real_execve = dlsym(RTLD_NEXT, "execve");
+    real_execve(shipped, av, ev);
+    fprintf(stderr, "xide: exec launcher errno %d (%s)\n", errno, strerror(errno));
+    free(av);
+    return -1;
+}
+
+int execve(const char* path, char* const argv[], char* const envp[]) {
+    const char* shipped;
+    if (!real_execve) real_execve = dlsym(RTLD_NEXT, "execve");
+    if (should_wrap(path) && is_java_bin(path)) {
+        shipped = getenv("XIDE_JAVA_BIN");
+        if (shipped && shipped[0] == '/') {
+            launch_shipped(shipped, path, argv, envp);
+            return -1;
+        }
+    }
     if (!should_wrap(path)) return real_execve(path, argv, envp);
     exec_private(path, argv, envp ? envp : environ);
     return -1;
@@ -278,11 +385,38 @@ __attribute__((constructor)) static void xide_exec_init(void) {
 }
 
 #ifdef XIDE_RUNNER
+static int try_dlmain(const char* path, int argc, char** argv) {
+    void* handle;
+    int (*fn)(int, char**);
+    const char* err;
+    dlerror();
+    handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+        err = dlerror();
+        fprintf(stderr, "xide-run: dlopen %s: %s\n", path, err ? err : "failed");
+        return -1;
+    }
+    fn = (int (*)(int, char**))dlsym(handle, "main");
+    if (!fn) {
+        err = dlerror();
+        fprintf(stderr, "xide-run: %s has no exported main (%s)\n", path, err ? err : "missing");
+        return -1;
+    }
+    return fn(argc, argv);
+}
+
 int main(int argc, char** argv) {
+    const char* shipped;
     if (argc < 2 || !argv[1] || argv[1][0] != '/') {
         fprintf(stderr, "xide-run: need an absolute program path\n");
         return 2;
     }
+    shipped = getenv("XIDE_JAVA_BIN");
+    if (shipped && shipped[0] == '/' && is_java_bin(argv[1])) {
+        launch_shipped(shipped, argv[1], argv + 1, environ);
+        return 127;
+    }
+    if (try_dlmain(argv[1], argc - 1, argv + 1) == 0) return 0;
     exec_private(argv[1], argv + 1, environ);
     fprintf(stderr, "xide-run: cannot start %s: %s\n", argv[1], strerror(errno));
     return 127;

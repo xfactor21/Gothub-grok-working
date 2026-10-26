@@ -34,7 +34,7 @@ object Assemble {
         val mark = File(ctx.cacheDir, "shim-mark.txt")
         mark.delete()
 
-        LogBus.job("running", "Assemble ${project.name}", "Checking java — executable memfd")
+        LogBus.job("running", "Assemble ${project.name}", "Checking java — native launcher")
         val run = HostExec.runner(ctx)
         try {
             val ver = HostExec.runCaptured(javaBin, listOf("-version"), env, dir, mark, run)

@@ -76,6 +76,8 @@ object HostExec {
             val prev = env["LD_PRELOAD"]
             env["LD_PRELOAD"] = if (prev.isNullOrBlank()) pre else "$pre:$prev"
         }
+        val javaLauncher = File(ctx.applicationInfo.nativeLibraryDir ?: "", "libxide-java.so")
+        if (javaLauncher.exists()) env["XIDE_JAVA_BIN"] = javaLauncher.absolutePath
     }
 
     /** Run a private ELF (java, aapt2) and return combined output. Throws on non-zero. */
