@@ -33,11 +33,12 @@ object Assemble {
         HostExec.fillEnv(ctx, env, javaHome, sdk)
         val mark = File(ctx.cacheDir, "shim-mark.txt")
         mark.delete()
+        env["XIDE_SHIM_MARK"] = mark.absolutePath
 
-        LogBus.job("running", "Assemble ${project.name}", "Checking java — native launcher")
-        val run = HostExec.runner(ctx)
+        LogBus.job("running", "Assemble ${project.name}", "Checking java — system linker")
         try {
-            val ver = HostExec.runCaptured(javaBin, listOf("-version"), env, dir, mark, run)
+            val verCmd = HostExec.armJava(ctx, javaHome, javaBin, listOf("-version"), env)
+            val ver = HostExec.runCommand(verCmd, env, dir)
             ver.lineSequence().map { it.trim() }.firstOrNull { it.isNotBlank() }?.let { LogBus.add(it.take(400)) }
             if (mark.exists()) LogBus.add("exec shim loaded — child tools can start")
             else LogBus.add("exec shim did not load — aapt2 may still be blocked")
@@ -50,6 +51,7 @@ object Assemble {
             return
         }
 
+        val run = HostExec.runner(ctx)
         val aapt = Toolchain.findAapt2(sdk)
         if (aapt != null) {
             try {
@@ -62,7 +64,9 @@ object Assemble {
         }
 
         LogBus.add("Gradle assembleDebug — first run needs Wi-Fi")
-        val cmd = HostExec.command(
+        val cmd = HostExec.armJava(
+            ctx,
+            javaHome,
             javaBin,
             listOf(
                 "-Xmx768m",
@@ -77,7 +81,7 @@ object Assemble {
                 "--warning-mode", "none",
                 ":app:assembleDebug",
             ),
-            run,
+            env,
         )
 
         val pb = ProcessBuilder(cmd)

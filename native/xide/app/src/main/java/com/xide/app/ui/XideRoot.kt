@@ -101,7 +101,7 @@ fun XideRoot(vm: XideViewModel) {
                 Column(Modifier.weight(1f)) {
                     Text("xIDE", color = Fg, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Text(
-                        "${project?.name ?: if (currentId == null) "No project" else "Project"} · v9.04",
+                        "${project?.name ?: if (currentId == null) "No project" else "Project"} · v9.05",
                         color = Subtle,
                         fontSize = 11.sp,
                         maxLines = 1,

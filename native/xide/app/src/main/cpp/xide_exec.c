@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char** environ;
@@ -273,43 +274,62 @@ static char** env_set(char* const envp[], const char* key, const char* val) {
     return out;
 }
 
+static int write_args(const char* dir, char* const argv[], char* out, size_t outsz) {
+    static int seq;
+    int fd;
+    int i;
+    snprintf(out, outsz, "%s/%d-%d.args", dir, (int)getpid(), ++seq);
+    fd = open(out, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) return -1;
+    for (i = 1; argv && argv[i]; i++) {
+        size_t n = strlen(argv[i]);
+        char z = 0;
+        if (write(fd, argv[i], n) != (ssize_t)n || write(fd, &z, 1) != 1) {
+            close(fd);
+            return -1;
+        }
+    }
+    close(fd);
+    return 0;
+}
+
 static int (*real_execve)(const char*, char* const[], char* const[]);
 
-/* The JDK java launcher is shipped in nativeLibraryDir, which Android allows
-   the app to execute. argv[0] stays the real java path so the launcher can
-   find JAVA_HOME, and readlink(/proc/self/exe) is rewritten to that path. */
-static int launch_shipped(const char* shipped, const char* exe, char* const argv[], char* const envp[]) {
-    int argc = 0;
-    int i;
-    char** av;
+/* linker64 <launcher> only. The launcher is a copy of libxide-java.so in jdk/bin
+   so its RPATH $ORIGIN/../lib finds libjli.so. Flags stay in XIDE_ARGFILE. */
+static int exec_java_launch(const char* java, char* const argv[], char* const envp[]) {
+    const char* launch = getenv("XIDE_LAUNCH");
+    const char* dir = getenv("XIDE_ARGV_DIR");
+    char argfile[512];
     char** ev;
-    while (argv && argv[argc]) argc++;
-    if (argc < 1) return -1;
-    av = (char**)calloc((size_t)argc + 1, sizeof(char*));
-    if (!av) return -1;
-    av[0] = (char*)exe;
-    for (i = 1; i < argc; i++) av[i] = argv[i];
-    ev = env_set(envp ? envp : environ, "XIDE_EXE", exe);
-    if (!ev) {
-        free(av);
+    char* av[3];
+    if (!launch || launch[0] != '/' || !dir || dir[0] != '/') {
+        fprintf(stderr, "xide: XIDE_LAUNCH missing\n");
+        errno = ENOENT;
         return -1;
     }
+    if (write_args(dir, argv, argfile, sizeof(argfile)) != 0) {
+        fprintf(stderr, "xide: cannot write args errno %d\n", errno);
+        return -1;
+    }
+    ev = env_set(envp ? envp : environ, "XIDE_ARGFILE", argfile);
+    if (!ev) return -1;
+    ev = env_set(ev, "XIDE_ARGV0", java);
+    ev = env_set(ev, "XIDE_EXE", java);
+    av[0] = "/system/bin/linker64";
+    av[1] = (char*)launch;
+    av[2] = NULL;
     if (!real_execve) real_execve = dlsym(RTLD_NEXT, "execve");
-    real_execve(shipped, av, ev);
-    fprintf(stderr, "xide: exec launcher errno %d (%s)\n", errno, strerror(errno));
-    free(av);
+    real_execve(av[0], av, ev);
+    fprintf(stderr, "xide: linker launch errno %d (%s)\n", errno, strerror(errno));
     return -1;
 }
 
 int execve(const char* path, char* const argv[], char* const envp[]) {
-    const char* shipped;
     if (!real_execve) real_execve = dlsym(RTLD_NEXT, "execve");
     if (should_wrap(path) && is_java_bin(path)) {
-        shipped = getenv("XIDE_JAVA_BIN");
-        if (shipped && shipped[0] == '/') {
-            launch_shipped(shipped, path, argv, envp);
-            return -1;
-        }
+        exec_java_launch(path, argv, envp);
+        return -1;
     }
     if (!should_wrap(path)) return real_execve(path, argv, envp);
     exec_private(path, argv, envp ? envp : environ);
@@ -406,14 +426,12 @@ static int try_dlmain(const char* path, int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
-    const char* shipped;
     if (argc < 2 || !argv[1] || argv[1][0] != '/') {
         fprintf(stderr, "xide-run: need an absolute program path\n");
         return 2;
     }
-    shipped = getenv("XIDE_JAVA_BIN");
-    if (shipped && shipped[0] == '/' && is_java_bin(argv[1])) {
-        launch_shipped(shipped, argv[1], argv + 1, environ);
+    if (is_java_bin(argv[1])) {
+        exec_java_launch(argv[1], argv + 1, environ);
         return 127;
     }
     if (try_dlmain(argv[1], argc - 1, argv + 1) == 0) return 0;

@@ -6,10 +6,10 @@ import com.xide.app.toolchain.LogBus
 import com.xide.app.toolchain.Toolchain
 import java.io.File
 
-/** Android 10+ refuses execve() on files the app wrote (EACCES, error 13), even in filesDir.
- *  The dynamic linker in /system is allowed to map those ELFs, so every private binary
- *  is started as `linker64 <binary> <args>`. Child processes get the same rewrite from
- *  libxide-exec.so via LD_PRELOAD. */
+/** This phone rejects memfd exec and also rejects linker64 arguments that are not
+ *  absolute paths. Java is started as `linker64 <jdk/bin/xide-launch>` with the
+ *  real arguments stored in XIDE_ARGFILE. The launch file is libxide-java.so
+ *  copied into jdk/bin so its RPATH can see libjli.so. */
 object HostExec {
     fun elfClass(file: File): Int {
         return try {
@@ -78,6 +78,56 @@ object HostExec {
         }
         val javaLauncher = File(ctx.applicationInfo.nativeLibraryDir ?: "", "libxide-java.so")
         if (javaLauncher.exists()) env["XIDE_JAVA_BIN"] = javaLauncher.absolutePath
+        val argvDir = File(ctx.filesDir, "argv").also { it.mkdirs() }
+        env["XIDE_ARGV_DIR"] = argvDir.absolutePath
+        stageLaunch(ctx, javaHome)?.let { env["XIDE_LAUNCH"] = it.absolutePath }
+    }
+
+    /** Copy the linker-loaded java stub next to the real java binary. */
+    fun stageLaunch(ctx: Context, javaHome: File): File? {
+        val src = File(ctx.applicationInfo.nativeLibraryDir ?: return null, "libxide-java.so")
+        if (!src.exists()) return null
+        val dest = File(javaHome, "bin/xide-launch")
+        dest.parentFile?.mkdirs()
+        if (!dest.exists() || dest.length() != src.length()) src.copyTo(dest, overwrite = true)
+        dest.setReadable(true, false)
+        return dest
+    }
+
+    /** Command line is only absolute paths. Arguments are written into [env]. */
+    fun armJava(ctx: Context, javaHome: File, javaBin: File, args: List<String>, env: MutableMap<String, String>): List<String> {
+        val launch = stageLaunch(ctx, javaHome) ?: error("java launcher missing from the app")
+        val dir = File(env["XIDE_ARGV_DIR"] ?: File(ctx.filesDir, "argv").also { it.mkdirs() }.absolutePath)
+        dir.mkdirs()
+        val file = File(dir, "args-${System.nanoTime()}")
+        file.outputStream().use { out ->
+            for (arg in args) {
+                out.write(arg.toByteArray(Charsets.UTF_8))
+                out.write(0)
+            }
+        }
+        env["XIDE_ARGFILE"] = file.absolutePath
+        env["XIDE_ARGV0"] = javaBin.absolutePath
+        env["XIDE_EXE"] = javaBin.absolutePath
+        env["XIDE_LAUNCH"] = launch.absolutePath
+        env["XIDE_ARGV_DIR"] = dir.absolutePath
+        env["JAVA_HOME"] = javaHome.absolutePath
+        return listOf("/system/bin/linker64", launch.absolutePath)
+    }
+
+    fun runCommand(cmd: List<String>, env: Map<String, String>, dir: File): String {
+        LogBus.add(cmd.joinToString(" "))
+        val pb = ProcessBuilder(cmd).directory(dir).redirectErrorStream(true)
+        val e = pb.environment()
+        env.forEach { (k, v) -> e[k] = v }
+        val proc = pb.start()
+        val text = proc.inputStream.bufferedReader().use { it.readText() }
+        val code = proc.waitFor()
+        if (code != 0) {
+            val tail = text.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList().takeLast(8)
+            error(if (tail.isEmpty()) "exit $code" else tail.joinToString(" | "))
+        }
+        return text
     }
 
     /** Run a private ELF (java, aapt2) and return combined output. Throws on non-zero. */
