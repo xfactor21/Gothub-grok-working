@@ -94,10 +94,9 @@ object HostExec {
         return dest
     }
 
-    /** Command line is only absolute paths. Arguments are written into [env]. */
-    fun armJava(ctx: Context, javaHome: File, javaBin: File, args: List<String>, env: MutableMap<String, String>): List<String> {
-        val launch = stageLaunch(ctx, javaHome) ?: error("java launcher missing from the app")
-        val dir = File(env["XIDE_ARGV_DIR"] ?: File(ctx.filesDir, "argv").also { it.mkdirs() }.absolutePath)
+    /** Command line is only absolute paths. Arguments are restored by libxide-exec.so. */
+    fun arm(binary: File, args: List<String>, env: MutableMap<String, String>): List<String> {
+        val dir = File(env["XIDE_ARGV_DIR"] ?: error("argv dir missing"))
         dir.mkdirs()
         val file = File(dir, "args-${System.nanoTime()}")
         file.outputStream().use { out ->
@@ -107,12 +106,26 @@ object HostExec {
             }
         }
         env["XIDE_ARGFILE"] = file.absolutePath
-        env["XIDE_ARGV0"] = javaBin.absolutePath
-        env["XIDE_EXE"] = javaBin.absolutePath
-        env["XIDE_LAUNCH"] = launch.absolutePath
-        env["XIDE_ARGV_DIR"] = dir.absolutePath
+        env["XIDE_ARGV0"] = binary.absolutePath
+        env["XIDE_EXE"] = binary.absolutePath
+        val linker = if (elfClass(binary) == 32) "/system/bin/linker" else "/system/bin/linker64"
+        return listOf(linker, binary.absolutePath)
+    }
+
+    /** Java stub reads XIDE_ARGFILE itself. aapt2 sets XIDE_INJECT_ARGV so the shim restores argv. */
+    fun armJava(ctx: Context, javaHome: File, javaBin: File, args: List<String>, env: MutableMap<String, String>): List<String> {
+        val launch = stageLaunch(ctx, javaHome) ?: error("java launcher missing from the app")
         env["JAVA_HOME"] = javaHome.absolutePath
-        return listOf("/system/bin/linker64", launch.absolutePath)
+        env["XIDE_INJECT_ARGV"] = "0"
+        val delegated = arm(javaBin, args, env)
+        env["XIDE_LAUNCH"] = launch.absolutePath
+        return listOf(delegated[0], launch.absolutePath)
+    }
+
+    fun armTool(binary: File, args: List<String>, env: MutableMap<String, String>): List<String> {
+        val cmd = arm(binary, args, env)
+        env["XIDE_INJECT_ARGV"] = "1"
+        return cmd
     }
 
     fun runCommand(cmd: List<String>, env: Map<String, String>, dir: File): String {

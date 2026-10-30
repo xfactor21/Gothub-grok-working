@@ -8,6 +8,9 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <malloc.h>
+#include <stdint.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -295,16 +298,17 @@ static int write_args(const char* dir, char* const argv[], char* out, size_t out
 
 static int (*real_execve)(const char*, char* const[], char* const[]);
 
-/* linker64 <launcher> only. The launcher is a copy of libxide-java.so in jdk/bin
-   so its RPATH $ORIGIN/../lib finds libjli.so. Flags stay in XIDE_ARGFILE. */
-static int exec_java_launch(const char* java, char* const argv[], char* const envp[]) {
-    const char* launch = getenv("XIDE_LAUNCH");
+/* linker64 <program> only. Flags are not linker arguments on this phone.
+   libxide-exec.so puts them back onto argv before main. */
+static int exec_via_linker(const char* path, char* const argv[], char* const envp[]) {
     const char* dir = getenv("XIDE_ARGV_DIR");
     char argfile[512];
     char** ev;
     char* av[3];
-    if (!launch || launch[0] != '/' || !dir || dir[0] != '/') {
-        fprintf(stderr, "xide: XIDE_LAUNCH missing\n");
+    const char* linker;
+    int cls = elf_class(path);
+    if (!dir || dir[0] != '/') {
+        fprintf(stderr, "xide: XIDE_ARGV_DIR missing\n");
         errno = ENOENT;
         return -1;
     }
@@ -312,27 +316,37 @@ static int exec_java_launch(const char* java, char* const argv[], char* const en
         fprintf(stderr, "xide: cannot write args errno %d\n", errno);
         return -1;
     }
+    linker = linker_for(cls);
     ev = env_set(envp ? envp : environ, "XIDE_ARGFILE", argfile);
     if (!ev) return -1;
-    ev = env_set(ev, "XIDE_ARGV0", java);
-    ev = env_set(ev, "XIDE_EXE", java);
-    av[0] = "/system/bin/linker64";
-    av[1] = (char*)launch;
+    ev = env_set(ev, "XIDE_ARGV0", path);
+    ev = env_set(ev, "XIDE_EXE", path);
+    if (is_java_bin(path)) {
+        const char* launch = getenv("XIDE_LAUNCH");
+        if (launch && launch[0] == '/') path = launch;
+        ev = env_set(ev, "XIDE_INJECT_ARGV", "0");
+    } else {
+        ev = env_set(ev, "XIDE_INJECT_ARGV", "1");
+    }
+    av[0] = (char*)linker;
+    av[1] = (char*)path;
     av[2] = NULL;
     if (!real_execve) real_execve = dlsym(RTLD_NEXT, "execve");
-    real_execve(av[0], av, ev);
-    fprintf(stderr, "xide: linker launch errno %d (%s)\n", errno, strerror(errno));
+    real_execve(linker, av, ev);
+    fprintf(stderr, "xide: linker errno %d (%s)\n", errno, strerror(errno));
     return -1;
 }
 
 int execve(const char* path, char* const argv[], char* const envp[]) {
+    int cls;
     if (!real_execve) real_execve = dlsym(RTLD_NEXT, "execve");
-    if (should_wrap(path) && is_java_bin(path)) {
-        exec_java_launch(path, argv, envp);
+    if (!should_wrap(path)) return real_execve(path, argv, envp);
+    cls = elf_class(path);
+    if (cls == 0) {
+        exec_script(path, argv, envp ? envp : environ);
         return -1;
     }
-    if (!should_wrap(path)) return real_execve(path, argv, envp);
-    exec_private(path, argv, envp ? envp : environ);
+    exec_via_linker(path, argv, envp);
     return -1;
 }
 
@@ -394,6 +408,112 @@ int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* 
     return 0;
 }
 
+#ifndef XIDE_RUNNER
+static char** read_arg_file(const char* path, const char* arg0, int* argc_out) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    off_t sz;
+    char* buf;
+    int nuls = 0;
+    int i;
+    int n = 1;
+    char* p;
+    char** av;
+    if (fd < 0) return NULL;
+    sz = lseek(fd, 0, SEEK_END);
+    if (sz < 0 || sz > 1024 * 1024) {
+        close(fd);
+        return NULL;
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        close(fd);
+        return NULL;
+    }
+    buf = (char*)malloc((size_t)sz + 1);
+    if (!buf || (sz > 0 && read(fd, buf, (size_t)sz) != sz)) {
+        close(fd);
+        free(buf);
+        return NULL;
+    }
+    close(fd);
+    buf[sz] = 0;
+    for (i = 0; i < sz; i++) if (buf[i] == 0) nuls++;
+    av = (char**)calloc((size_t)nuls + 2, sizeof(char*));
+    if (!av) return NULL;
+    av[0] = strdup(arg0);
+    p = buf;
+    for (i = 0; i < nuls; i++) {
+        av[n++] = p;
+        p += strlen(p) + 1;
+    }
+    av[n] = NULL;
+    *argc_out = n;
+    return av;
+}
+
+static int (*xide_saved_main)(int, char**, char**);
+
+static int same_exe(const char* a, const char* b) {
+    char ra[PATH_MAX];
+    char rb[PATH_MAX];
+    if (!a || !b) return 0;
+    if (strcmp(a, b) == 0) return 1;
+    if (!realpath(a, ra) || !realpath(b, rb)) return 0;
+    return strcmp(ra, rb) == 0;
+}
+
+static int xide_slingshot(int argc, char** argv, char** envp) {
+    const char* file = getenv("XIDE_ARGFILE");
+    const char* arg0 = getenv("XIDE_ARGV0");
+    const char* inject = getenv("XIDE_INJECT_ARGV");
+    char** nav;
+    int nac = 0;
+    if (inject && inject[0] == '1' && file && arg0 && argv && argv[0] && same_exe(argv[0], arg0)) {
+        nav = read_arg_file(file, arg0, &nac);
+        if (nav && nac >= 1) {
+            argc = nac;
+            argv = nav;
+        } else {
+            fprintf(stderr, "xide: argfile unread\n");
+        }
+    }
+    return xide_saved_main(argc, argv, envp);
+}
+
+/* The dynamic linker resolves the executable's __libc_init to this preload.
+   Real libc still applies the linker64 argument shift, then we restore flags. */
+void __libc_init(void* raw_args, void (*onexit)(void), int (*slingshot)(int, char**, char**), const void* structors) {
+    void (*real_init)(void*, void (*)(void), int (*)(int, char**, char**), const void*);
+    const char* inject;
+    real_init = dlsym(RTLD_NEXT, "__libc_init");
+    if (!real_init || !slingshot) {
+        fprintf(stderr, "xide: __libc_init missing\n");
+        _exit(127);
+    }
+    inject = getenv("XIDE_INJECT_ARGV");
+    if (inject && inject[0] == '1') {
+        xide_saved_main = slingshot;
+        real_init(raw_args, onexit, xide_slingshot, structors);
+    } else {
+        real_init(raw_args, onexit, slingshot, structors);
+    }
+}
+#endif
+
+__attribute__((constructor(101))) static void xide_untag(void) {
+    /* Android 11+ tags heap pointers. This JDK clears the tag and free() aborts (exit 134). */
+    unsigned level = 0;
+    int (*am)(int, void*, size_t);
+    void* p;
+    am = (int (*)(int, void*, size_t))dlsym(RTLD_DEFAULT, "android_mallopt");
+    if (am) am(8 /* M_SET_HEAP_TAGGING_LEVEL */, &level, sizeof(level));
+    mallopt(M_BIONIC_SET_HEAP_TAGGING_LEVEL, M_HEAP_TAGGING_LEVEL_NONE);
+    p = malloc(16);
+    if (p && (((uintptr_t)p) >> 56) != 0) {
+        fprintf(stderr, "xide: heap tag still set\n");
+    }
+    free(p);
+}
+
 __attribute__((constructor)) static void xide_exec_init(void) {
     const char* mark = getenv("XIDE_SHIM_MARK");
     FILE* f;
@@ -431,7 +551,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (is_java_bin(argv[1])) {
-        exec_java_launch(argv[1], argv + 1, environ);
+        exec_via_linker(argv[1], argv + 1, environ);
         return 127;
     }
     if (try_dlmain(argv[1], argc - 1, argv + 1) == 0) return 0;

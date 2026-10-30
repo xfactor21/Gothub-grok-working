@@ -35,7 +35,7 @@ object Assemble {
         mark.delete()
         env["XIDE_SHIM_MARK"] = mark.absolutePath
 
-        LogBus.job("running", "Assemble ${project.name}", "Checking java — system linker")
+        LogBus.job("running", "Assemble ${project.name}", "Checking java — heap tags off")
         try {
             val verCmd = HostExec.armJava(ctx, javaHome, javaBin, listOf("-version"), env)
             val ver = HostExec.runCommand(verCmd, env, dir)
@@ -51,11 +51,11 @@ object Assemble {
             return
         }
 
-        val run = HostExec.runner(ctx)
         val aapt = Toolchain.findAapt2(sdk)
         if (aapt != null) {
             try {
-                HostExec.runCaptured(aapt, listOf("version"), env, dir, null, run)
+                val aaptCmd = HostExec.armTool(aapt, listOf("version"), env)
+                HostExec.runCommand(aaptCmd, env, dir)
                     .lineSequence().map { it.trim() }.firstOrNull { it.isNotBlank() }
                     ?.let { LogBus.add("aapt2 $it".take(400)) }
             } catch (t: Throwable) {

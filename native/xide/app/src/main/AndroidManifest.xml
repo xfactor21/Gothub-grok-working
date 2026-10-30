@@ -16,6 +16,8 @@
         android:largeHeap="true"
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
+        android:allowNativeHeapPointerTagging="false"
+        android:memtagMode="off"
         android:extractNativeLibs="true"
         android:theme="@style/Theme.Xide"
         android:usesCleartextTraffic="false">

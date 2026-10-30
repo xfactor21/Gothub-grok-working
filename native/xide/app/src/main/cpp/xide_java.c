@@ -8,6 +8,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdint.h>
+#include <malloc.h>
+#include <dlfcn.h>
 
 extern int JLI_Launch(int argc, char** argv,
                       int jargc, const char** jargv,
@@ -60,6 +63,14 @@ static char** read_args(const char* path, const char* arg0, int* argc_out) {
     av[n] = NULL;
     *argc_out = n;
     return av;
+}
+
+__attribute__((constructor(101))) static void xide_java_untag(void) {
+    unsigned level = 0;
+    int (*am)(int, void*, size_t);
+    am = (int (*)(int, void*, size_t))dlsym(RTLD_DEFAULT, "android_mallopt");
+    if (am) am(8, &level, sizeof(level));
+    mallopt(-204, 0);
 }
 
 int main(void) {
